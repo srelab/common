@@ -1,415 +1,384 @@
 package log
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"runtime"
-	"strconv"
-	"sync"
-	"time"
+	"strings"
 
-	"github.com/mattn/go-isatty"
-	"github.com/valyala/fasttemplate"
+	"github.com/natefinch/lumberjack"
 
-	"github.com/srelab/common/color"
+	"github.com/srelab/common/random"
+
+	"github.com/sirupsen/logrus"
+	"github.com/srelab/common/file"
 )
 
-type (
-	Logger struct {
-		prefix     string
-		level      Lvl
-		skip       int
-		output     io.Writer
-		template   *fasttemplate.Template
-		levels     []string
-		color      *color.Color
-		bufferPool sync.Pool
-		mutex      sync.Mutex
-	}
+// Level describes the log severity level.
+type Level uint8
 
-	Lvl uint8
-
-	JSON map[string]interface{}
-)
-
+// These are the different logging levels. You can set the logging level to log
+// on your instance of logger, obtained with `logrus.New()`.
 const (
-	DEBUG Lvl = iota + 1
-	INFO
-	WARN
-	ERROR
-	OFF
-	panicLevel
-	fatalLevel
+	// PanicLevel level, highest level of severity. Logs and then calls panic with the
+	// message passed to Debug, Info, ...
+	PanicLevel Level = iota
+	// FatalLevel level. Logs and then calls `logger.Exit(1)`. It will exit even if the
+	// logging level is set to Panic.
+	FatalLevel
+	// ErrorLevel level. Logs. Used for errors that should definitely be noted.
+	// Commonly used for hooks to send errors to an error tracking service.
+	ErrorLevel
+	// WarnLevel level. Non-critical entries that deserve eyes.
+	WarnLevel
+	// InfoLevel level. General operational entries about what's going on inside the
+	// application.
+	InfoLevel
+	// DebugLevel level. Usually only enabled when debugging. Very verbose logging.
+	DebugLevel
+	// TraceLevel level. Designates finer-grained informational events than the Debug.
+	TraceLevel
 )
 
-var (
-	global        = New("-")
-	defaultHeader = `{"time":"${time_rfc3339_nano}","level":"${level}","prefix":"${prefix}",` +
-		`"file":"${short_file}","line":"${line}"}`
-)
-
-func init() {
-	global.skip = 3
+type Config struct {
+	Path  string `yaml:"Path"`
+	Level string `yaml:"Level"`
 }
 
-func New(prefix string) (l *Logger) {
-	l = &Logger{
-		level:    INFO,
-		skip:     2,
-		prefix:   prefix,
-		template: l.newTemplate(defaultHeader),
-		color:    color.New(),
-		bufferPool: sync.Pool{
-			New: func() interface{} {
-				return bytes.NewBuffer(make([]byte, 256))
-			},
-		},
+// Logger is an interface that describes logging.
+type Logger interface {
+	With(key string, value interface{}) Logger
+	WithError(err error) Logger
+
+	SetLevel(level Level)
+	SetOut(out io.Writer)
+
+	Trace(...interface{})
+	Debug(...interface{})
+	Print(...interface{})
+	Info(...interface{})
+	Warn(...interface{})
+	Error(...interface{})
+	Fatal(...interface{})
+	Panic(...interface{})
+
+	Tracef(string, ...interface{})
+	Debugf(string, ...interface{})
+	Printf(string, ...interface{})
+	Infof(string, ...interface{})
+	Warnf(string, ...interface{})
+	Errorf(string, ...interface{})
+	Fatalf(string, ...interface{})
+	Panicf(string, ...interface{})
+
+	Traceln(...interface{})
+	Debugln(...interface{})
+	Println(...interface{})
+	Infoln(...interface{})
+	Warnln(...interface{})
+	Errorln(...interface{})
+	Fatalln(...interface{})
+	Panicln(...interface{})
+}
+
+type logger struct {
+	entry *logrus.Entry
+}
+
+// With attaches a key-value pair to a logger.
+func (l logger) With(key string, value interface{}) Logger {
+	return logger{l.entry.WithField(key, value)}
+}
+
+// WithError attaches an error to a logger.
+func (l logger) WithError(err error) Logger {
+	return logger{l.entry.WithError(err)}
+}
+
+// SetLevel sets the level of a logger.
+func (l logger) SetLevel(level Level) {
+	l.entry.Logger.Level = logrus.Level(level)
+}
+
+// SetOut sets the output destination for a logger.
+func (l logger) SetOut(out io.Writer) {
+	l.entry.Logger.Out = out
+}
+
+// Trace logs a message at level Trace on the standard logger.
+func (l logger) Trace(args ...interface{}) {
+	l.sourced().Trace(args...)
+}
+
+// Debug logs a message at level Debug on the standard logger.
+func (l logger) Debug(args ...interface{}) {
+	l.sourced().Debug(args...)
+}
+
+// Print logs a message at level Print on the standard logger.
+func (l logger) Print(args ...interface{}) {
+	l.sourced().Print(args...)
+}
+
+// Info logs a message at level Info on the standard logger.
+func (l logger) Info(args ...interface{}) {
+	l.sourced().Info(args...)
+}
+
+// Warn logs a message at level Warn on the standard logger.
+func (l logger) Warn(args ...interface{}) {
+	l.sourced().Warn(args...)
+}
+
+// Error logs a message at Error Info on the standard logger.
+func (l logger) Error(args ...interface{}) {
+	l.sourced().Error(args...)
+}
+
+// Fatal logs a message at level Fatal on the standard logger.
+func (l logger) Fatal(args ...interface{}) {
+	l.sourced().Fatal(args...)
+}
+
+// Panic logs a message at level Panic on the standard logger.
+func (l logger) Panic(args ...interface{}) {
+	l.sourced().Panic(args...)
+}
+
+func (l logger) Tracef(format string, args ...interface{}) {
+	l.sourced().Tracef(format, args...)
+}
+
+func (l logger) Debugf(format string, args ...interface{}) {
+	l.sourced().Debugf(format, args...)
+}
+
+func (l logger) Printf(format string, args ...interface{}) {
+	l.sourced().Printf(format, args...)
+}
+
+func (l logger) Infof(format string, args ...interface{}) {
+	l.sourced().Infof(format, args...)
+}
+
+func (l logger) Warnf(format string, args ...interface{}) {
+	l.sourced().Warnf(format, args...)
+}
+
+func (l logger) Errorf(format string, args ...interface{}) {
+	l.sourced().Errorf(format, args...)
+}
+
+func (l logger) Fatalf(format string, args ...interface{}) {
+	l.sourced().Fatalf(format, args...)
+}
+
+func (l logger) Panicf(format string, args ...interface{}) {
+	l.sourced().Panicf(format, args...)
+}
+
+func (l logger) Traceln(args ...interface{}) {
+	l.sourced().Traceln(args...)
+}
+
+func (l logger) Debugln(args ...interface{}) {
+	l.sourced().Debugln(args...)
+}
+
+func (l logger) Println(args ...interface{}) {
+	l.sourced().Println(args...)
+}
+
+func (l logger) Infoln(args ...interface{}) {
+	l.sourced().Infoln(args...)
+}
+
+func (l logger) Warnln(args ...interface{}) {
+	l.sourced().Warnln(args...)
+}
+
+func (l logger) Errorln(args ...interface{}) {
+	l.sourced().Errorln(args...)
+}
+
+func (l logger) Fatalln(args ...interface{}) {
+	l.sourced().Fatalln(args...)
+}
+
+func (l logger) Panicln(args ...interface{}) {
+	l.sourced().Panicln(args...)
+}
+
+// sourced adds a source field to the logger that contains
+// the file name and line where the logging happened.
+func (l logger) sourced() *logrus.Entry {
+	_, _file, line, ok := runtime.Caller(2)
+
+	if !ok {
+		_file = "<???>"
+		line = 1
+	} else {
+		slash := strings.LastIndex(_file, "/")
+		_file = _file[slash+1:]
 	}
-	l.initLevels()
-	l.SetOutput(output())
-	return
+
+	return l.entry.WithField("src", fmt.Sprintf("%s:%d", _file, line))
 }
 
-func (l *Logger) initLevels() {
-	l.levels = []string{
-		"-",
-		l.color.Blue("DEBUG"),
-		l.color.Green("INFO"),
-		l.color.Yellow("WARN"),
-		l.color.Red("ERROR"),
-		"",
-		l.color.Yellow("PANIC", color.U),
-		l.color.Red("FATAL", color.U),
+var origLogger = logrus.New()
+var baseLogger = logger{entry: logrus.NewEntry(origLogger)}
+
+// New returns a new logger.
+func New() Logger {
+	return logger{entry: logrus.NewEntry(origLogger)}
+}
+
+// Base returns the base logger.
+func Base() Logger {
+	return baseLogger
+}
+
+// Initialize the logger with config
+// When path is not legal, the current path will be used.
+// Multiwriter by default
+func Init(config Config) {
+	var fp, fn string
+	if file.IsFile(config.Path) || file.IsExist(file.Dir(config.Path)) {
+		fp, fn = file.Dir(config.Path), file.Basename(config.Path)
+	} else if file.IsExist(config.Path) {
+		fp, fn = config.Path, random.New().String(8, random.Lowercase)+".log"
+	} else {
+		fp, fn = "./", random.New().String(8, random.Lowercase)+".log"
 	}
-}
 
-func (l *Logger) newTemplate(format string) *fasttemplate.Template {
-	return fasttemplate.New(format, "${", "}")
-}
-
-func (l *Logger) DisableColor() {
-	l.color.Disable()
-	l.initLevels()
-}
-
-func (l *Logger) EnableColor() {
-	l.color.Enable()
-	l.initLevels()
-}
-
-func (l *Logger) Prefix() string {
-	return l.prefix
-}
-
-func (l *Logger) SetPrefix(p string) {
-	l.prefix = p
-}
-
-func (l *Logger) Level() Lvl {
-	return l.level
-}
-
-func (l *Logger) SetLevel(v Lvl) {
-	l.level = v
-}
-
-func (l *Logger) Output() io.Writer {
-	return l.output
-}
-
-func (l *Logger) SetOutput(w io.Writer) {
-	l.output = w
-	if w, ok := w.(*os.File); !ok || !isatty.IsTerminal(w.Fd()) {
-		l.DisableColor()
+	level, err := logrus.ParseLevel(config.Level)
+	if err != nil {
+		level = logrus.InfoLevel
 	}
+
+	SetLevel(Level(level))
+	SetOut(io.MultiWriter(os.Stdout, &lumberjack.Logger{
+		Filename:   path.Join(fp, fn),
+		MaxSize:    500,
+		MaxBackups: 3,
+		MaxAge:     28,
+		Compress:   true,
+		LocalTime:  true,
+	}))
 }
 
-func (l *Logger) Color() *color.Color {
-	return l.color
+// SetLevel sets the Level of the base logger
+func SetLevel(level Level) {
+	baseLogger.entry.Logger.Level = logrus.Level(level)
 }
 
-func (l *Logger) SetHeader(h string) {
-	l.template = l.newTemplate(h)
+// SetOut sets the output destination base logger
+func SetOut(out io.Writer) {
+	baseLogger.entry.Logger.Out = out
 }
 
-func (l *Logger) Print(i ...interface{}) {
-	l.log(0, "", i...)
-	// fmt.Fprintln(l.output, i...)
+func With(key string, value interface{}) Logger {
+	return baseLogger.With(key, value)
 }
 
-func (l *Logger) Printf(format string, args ...interface{}) {
-	l.log(0, format, args...)
+func WithError(err error) Logger {
+	return logger{entry: baseLogger.sourced().WithError(err)}
 }
 
-func (l *Logger) Printj(j JSON) {
-	l.log(0, "json", j)
+func Trace(args ...interface{}) {
+	baseLogger.sourced().Trace(args...)
 }
 
-func (l *Logger) Debug(i ...interface{}) {
-	l.log(DEBUG, "", i...)
+func Tracef(format string, args ...interface{}) {
+	baseLogger.sourced().Tracef(format, args...)
 }
 
-func (l *Logger) Debugf(format string, args ...interface{}) {
-	l.log(DEBUG, format, args...)
+func Traceln(args ...interface{}) {
+	baseLogger.sourced().Traceln(args...)
 }
 
-func (l *Logger) Debugj(j JSON) {
-	l.log(DEBUG, "json", j)
-}
-
-func (l *Logger) Info(i ...interface{}) {
-	l.log(INFO, "", i...)
-}
-
-func (l *Logger) Infof(format string, args ...interface{}) {
-	l.log(INFO, format, args...)
-}
-
-func (l *Logger) Infoj(j JSON) {
-	l.log(INFO, "json", j)
-}
-
-func (l *Logger) Warn(i ...interface{}) {
-	l.log(WARN, "", i...)
-}
-
-func (l *Logger) Warnf(format string, args ...interface{}) {
-	l.log(WARN, format, args...)
-}
-
-func (l *Logger) Warnj(j JSON) {
-	l.log(WARN, "json", j)
-}
-
-func (l *Logger) Error(i ...interface{}) {
-	l.log(ERROR, "", i...)
-}
-
-func (l *Logger) Errorf(format string, args ...interface{}) {
-	l.log(ERROR, format, args...)
-}
-
-func (l *Logger) Errorj(j JSON) {
-	l.log(ERROR, "json", j)
-}
-
-func (l *Logger) Fatal(i ...interface{}) {
-	l.log(fatalLevel, "", i...)
-	os.Exit(1)
-}
-
-func (l *Logger) Fatalf(format string, args ...interface{}) {
-	l.log(fatalLevel, format, args...)
-	os.Exit(1)
-}
-
-func (l *Logger) Fatalj(j JSON) {
-	l.log(fatalLevel, "json", j)
-	os.Exit(1)
-}
-
-func (l *Logger) Panic(i ...interface{}) {
-	l.log(panicLevel, "", i...)
-	panic(fmt.Sprint(i...))
-}
-
-func (l *Logger) Panicf(format string, args ...interface{}) {
-	l.log(panicLevel, format, args...)
-	panic(fmt.Sprintf(format, args...))
-}
-
-func (l *Logger) Panicj(j JSON) {
-	l.log(panicLevel, "json", j)
-	panic(j)
-}
-
-func DisableColor() {
-	global.DisableColor()
-}
-
-func EnableColor() {
-	global.EnableColor()
-}
-
-func Prefix() string {
-	return global.Prefix()
-}
-
-func SetPrefix(p string) {
-	global.SetPrefix(p)
-}
-
-func Level() Lvl {
-	return global.Level()
-}
-
-func SetLevel(v Lvl) {
-	global.SetLevel(v)
-}
-
-func Output() io.Writer {
-	return global.Output()
-}
-
-func SetOutput(w io.Writer) {
-	global.SetOutput(w)
-}
-
-func SetHeader(h string) {
-	global.SetHeader(h)
-}
-
-func Print(i ...interface{}) {
-	global.Print(i...)
-}
-
-func Printf(format string, args ...interface{}) {
-	global.Printf(format, args...)
-}
-
-func Printj(j JSON) {
-	global.Printj(j)
-}
-
-func Debug(i ...interface{}) {
-	global.Debug(i...)
+func Debug(args ...interface{}) {
+	baseLogger.sourced().Debug(args...)
 }
 
 func Debugf(format string, args ...interface{}) {
-	global.Debugf(format, args...)
+	baseLogger.sourced().Debugf(format, args...)
 }
 
-func Debugj(j JSON) {
-	global.Debugj(j)
+func Debugln(args ...interface{}) {
+	baseLogger.sourced().Debugln(args...)
 }
 
-func Info(i ...interface{}) {
-	global.Info(i...)
+func Print(args ...interface{}) {
+	baseLogger.sourced().Print(args...)
+}
+
+func Printf(format string, args ...interface{}) {
+	baseLogger.sourced().Printf(format, args...)
+}
+
+func Println(args ...interface{}) {
+	baseLogger.sourced().Println(args...)
+}
+
+func Info(args ...interface{}) {
+	baseLogger.sourced().Info(args...)
 }
 
 func Infof(format string, args ...interface{}) {
-	global.Infof(format, args...)
+	baseLogger.sourced().Infof(format, args...)
 }
 
-func Infoj(j JSON) {
-	global.Infoj(j)
+func Infoln(args ...interface{}) {
+	baseLogger.sourced().Infoln(args...)
 }
 
-func Warn(i ...interface{}) {
-	global.Warn(i...)
+func Warn(args ...interface{}) {
+	baseLogger.sourced().Warn(args...)
 }
 
 func Warnf(format string, args ...interface{}) {
-	global.Warnf(format, args...)
+	baseLogger.sourced().Warnf(format, args...)
 }
 
-func Warnj(j JSON) {
-	global.Warnj(j)
+func Warnln(args ...interface{}) {
+	baseLogger.sourced().Warnln(args...)
 }
 
-func Error(i ...interface{}) {
-	global.Error(i...)
+func Error(args ...interface{}) {
+	baseLogger.sourced().Error(args...)
 }
 
 func Errorf(format string, args ...interface{}) {
-	global.Errorf(format, args...)
+	baseLogger.sourced().Errorf(format, args...)
 }
 
-func Errorj(j JSON) {
-	global.Errorj(j)
+func Errorln(args ...interface{}) {
+	baseLogger.sourced().Errorln(args...)
 }
 
-func Fatal(i ...interface{}) {
-	global.Fatal(i...)
+func Fatal(args ...interface{}) {
+	baseLogger.sourced().Fatal(args...)
 }
 
 func Fatalf(format string, args ...interface{}) {
-	global.Fatalf(format, args...)
+	baseLogger.sourced().Fatalf(format, args...)
 }
 
-func Fatalj(j JSON) {
-	global.Fatalj(j)
+func Fatalln(args ...interface{}) {
+	baseLogger.sourced().Fatalln(args...)
 }
 
-func Panic(i ...interface{}) {
-	global.Panic(i...)
+func Panic(args ...interface{}) {
+	baseLogger.sourced().Panic(args...)
 }
 
 func Panicf(format string, args ...interface{}) {
-	global.Panicf(format, args...)
+	baseLogger.sourced().Panicf(format, args...)
 }
 
-func Panicj(j JSON) {
-	global.Panicj(j)
-}
-
-func (l *Logger) log(v Lvl, format string, args ...interface{}) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-	buf := l.bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer l.bufferPool.Put(buf)
-	_, file, line, _ := runtime.Caller(l.skip)
-
-	if v >= l.level || v == 0 {
-		message := ""
-		if format == "" {
-			message = fmt.Sprint(args...)
-		} else if format == "json" {
-			b, err := json.Marshal(args[0])
-			if err != nil {
-				panic(err)
-			}
-			message = string(b)
-		} else {
-			message = fmt.Sprintf(format, args...)
-		}
-
-		_, err := l.template.ExecuteFunc(buf, func(w io.Writer, tag string) (int, error) {
-			switch tag {
-			case "time_rfc3339":
-				return w.Write([]byte(time.Now().Format(time.RFC3339)))
-			case "time_rfc3339_nano":
-				return w.Write([]byte(time.Now().Format(time.RFC3339Nano)))
-			case "level":
-				return w.Write([]byte(l.levels[v]))
-			case "prefix":
-				return w.Write([]byte(l.prefix))
-			case "long_file":
-				return w.Write([]byte(file))
-			case "short_file":
-				return w.Write([]byte(path.Base(file)))
-			case "line":
-				return w.Write([]byte(strconv.Itoa(line)))
-			}
-			return 0, nil
-		})
-
-		if err == nil {
-			s := buf.String()
-			i := buf.Len() - 1
-			if s[i] == '}' {
-				// JSON header
-				buf.Truncate(i)
-				buf.WriteByte(',')
-				if format == "json" {
-					buf.WriteString(message[1:])
-				} else {
-					buf.WriteString(`"message":`)
-					buf.WriteString(strconv.Quote(message))
-					buf.WriteString(`}`)
-				}
-			} else {
-				// Text header
-				buf.WriteByte(' ')
-				buf.WriteString(message)
-			}
-			buf.WriteByte('\n')
-			l.output.Write(buf.Bytes())
-		}
-	}
+func Panicln(args ...interface{}) {
+	baseLogger.sourced().Panicln(args...)
 }
