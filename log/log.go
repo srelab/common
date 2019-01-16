@@ -245,10 +245,10 @@ func Base() Logger {
 // Multiwriter by default
 func Init(config *Config) {
 	var fp, fn string
-	if file.IsFile(config.Path) || file.IsExist(file.Dir(config.Path)) {
-		fp, fn = file.Dir(config.Path), file.Basename(config.Path)
-	} else if file.IsExist(config.Path) {
-		fp, fn = config.Path, random.New().String(8, random.Lowercase)+".log"
+	if file.IsFile(config.File) || file.IsExist(file.Dir(config.File)) {
+		fp, fn = file.Dir(config.File), file.Basename(config.File)
+	} else if file.IsExist(config.File) {
+		fp, fn = config.File, random.New().String(8, random.Lowercase)+".log"
 	} else {
 		fp, fn = "./", random.New().String(8, random.Lowercase)+".log"
 	}
