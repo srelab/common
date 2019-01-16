@@ -43,7 +43,7 @@ const (
 )
 
 type Config struct {
-	Path  string `yaml:"Path"`
+	File  string `yaml:"File"`
 	Level string `yaml:"Level"`
 }
 
@@ -243,7 +243,7 @@ func Base() Logger {
 // Initialize the logger with config
 // When path is not legal, the current path will be used.
 // Multiwriter by default
-func Init(config Config) {
+func Init(config *Config) {
 	var fp, fn string
 	if file.IsFile(config.Path) || file.IsExist(file.Dir(config.Path)) {
 		fp, fn = file.Dir(config.Path), file.Basename(config.Path)
