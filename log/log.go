@@ -102,6 +102,11 @@ func (l logger) SetLevel(level Level) {
 	l.entry.Logger.Level = logrus.Level(level)
 }
 
+// GetLevel gets the level of a logger.
+func (l logger) GetLevel() Level {
+	return baseLogger.entry.Logger.Level
+}
+
 // SetOut sets the output destination for a logger.
 func (l logger) SetOut(out io.Writer) {
 	l.entry.Logger.Out = out
@@ -243,7 +248,7 @@ func Base() Logger {
 // Initialize the logger with config
 // When path is not legal, the current path will be used.
 // Multiwriter by default
-func Init(config *Config) {
+func Init(config Config) {
 	var fp, fn string
 	if file.IsFile(config.File) || file.IsExist(file.Dir(config.File)) {
 		fp, fn = file.Dir(config.File), file.Basename(config.File)
