@@ -102,11 +102,6 @@ func (l logger) SetLevel(level Level) {
 	l.entry.Logger.Level = logrus.Level(level)
 }
 
-// GetLevel gets the level of a logger.
-func (l logger) GetLevel() Level {
-	return baseLogger.entry.Logger.Level
-}
-
 // SetOut sets the output destination for a logger.
 func (l logger) SetOut(out io.Writer) {
 	l.entry.Logger.Out = out
@@ -277,6 +272,11 @@ func Init(config Config) {
 // SetLevel sets the Level of the base logger
 func SetLevel(level Level) {
 	baseLogger.entry.Logger.Level = logrus.Level(level)
+}
+
+// GetLevel gets the level of a logger.
+func GetLevel() Level {
+	return Level(baseLogger.entry.Logger.Level)
 }
 
 // SetOut sets the output destination base logger
