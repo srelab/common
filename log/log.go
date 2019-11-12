@@ -244,12 +244,8 @@ func Base() Logger {
 // When path is not legal, the current path will be used.
 // Multiwriter by default
 func Init(config Config) {
-	var fp, fn string
-	if file.IsFile(config.File) {
-		fp, fn = file.Dir(config.File), file.Basename(config.File)
-	} else if !file.IsExist(config.File) && file.IsExist(file.Dir(config.File)) {
-		fp, fn = config.File, random.New().String(8, random.Lowercase)+".log"
-	} else {
+	fp, fn := file.Dir(config.File), file.Basename(config.File)
+	if err := file.EnsureDirRW(fp); err != nil || (file.IsExist(config.File) && !file.IsFile(config.File))  {
 		fp, fn = "./", random.New().String(8, random.Lowercase)+".log"
 	}
 
